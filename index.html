@@ -1,14 +1,51 @@
 <!DOCTYPE html>
-<html lang="ja">
+<html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>実験都市（白）</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Wire Hook Test</title>
   <style>
     body { margin: 0; overflow: hidden; }
-    canvas { display: block; }
+    /* ========= クロスヘア用スタイル ========= */
+    .crosshair {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 20px;
+      height: 20px;
+      margin-left: -10px;  /* 幅の半分 */
+      margin-top: -10px;   /* 高さの半分 */
+      pointer-events: none; /* クリックを下層に透過 */
+    }
+    .crosshair:before, .crosshair:after {
+      content: '';
+      position: absolute;
+      background: #000;
+    }
+    .crosshair:before {
+      /* 横線 */
+      top: 50%;
+      left: 0;
+      right: 0;
+      height: 2px;
+      transform: translateY(-50%);
+    }
+    .crosshair:after {
+      /* 縦線 */
+      left: 50%;
+      top: 0;
+      bottom: 0;
+      width: 2px;
+      transform: translateX(-50%);
+    }
+    /* ======================================== */
   </style>
 </head>
 <body>
+  <!-- クロスヘアを画面中央に表示 -->
+  <div class="crosshair"></div>
+
+  <!-- 既存の main.js (モジュール) を読み込む -->
   <script type="module" src="./main.js"></script>
 </body>
 </html>
