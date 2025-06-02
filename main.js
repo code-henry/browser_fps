@@ -284,12 +284,15 @@ window.addEventListener('keyup', (e) => {
 //
 let prevTime = performance.now();
 
+
 function animate() {
   requestAnimationFrame(animate);
 
   const time = performance.now();
   const delta = (time - prevTime) / 1000;
   prevTime = time;
+
+
 
   // ターボモード時の倍率適用
   const currentSpeedMult = turboMode ?
@@ -313,7 +316,6 @@ function animate() {
     playerPos.copy(controls.getObject().position);
     handleMovementFlag = true;
   }
-
   // ──────────────────────────────────────────────────
   // (B) 常に適用する物理演算（重力・減衰・ワイヤー張力・速度更新）
   // ──────────────────────────────────────────────────
@@ -386,16 +388,45 @@ function animate() {
   // ──────────────────────────────────────────────────
   // (C) 位置更新（通常移動 or 慣性移動 or ワイヤー移動）
   // ──────────────────────────────────────────────────
+  // if (isGrappleLeft || isGrappleRight || isInertiaMode) {
+  //   // ワイヤー中 or 慣性中は、「速度ベクトル」による移動
+  //   playerPos.add(playerVelocity.clone().multiplyScalar(delta));
+  // }
+
+  const groundY = 5;
+
   if (isGrappleLeft || isGrappleRight || isInertiaMode) {
-    // ワイヤー中 or 慣性中は、「速度ベクトル」による移動
-    playerPos.add(playerVelocity.clone().multiplyScalar(delta));
+    // 【ポイント】ワイヤー中は「地面スナップをかけない」。nextY チェックは慣性モード中だけ行う
+    if (isInertiaMode) {
+      //―― 慣性移動中は“次フレームで地面を下回るか”をチェック――
+      const nextY = playerPos.y + playerVelocity.y * delta;
+      if (nextY < groundY) {
+        // “着地フレーム” のみ地面に張り付け
+        playerPos.y = groundY;
+        playerVelocity.y = 0;
+        isInertiaMode = false;
+      } else {
+        // 地面を下回らない → 通常どおり落下
+        playerPos.add(playerVelocity.clone().multiplyScalar(delta));
+      }
+    } else {
+      // ワイヤー中（isGrappleLeft || isGrappleRight）は地面制限ナシで完全に velocity 適用
+      playerPos.add(playerVelocity.clone().multiplyScalar(delta));
+    }
   }
+
+
+
+
+
+
+
   // 通常移動時はすでに handleMovement() が playerPos を書き換えているため、ここでは何もしない
 
   // ──────────────────────────────────────────────────
   // (D) 地面スナップ ＆ 着地判定
   // ──────────────────────────────────────────────────
-  const groundY = 1.5;
+
   if (playerPos.y < groundY) {
     playerPos.y = groundY;
     playerVelocity.y = 0;
@@ -418,8 +449,14 @@ function animate() {
   } else {
     visiblePos.copy(playerPos);
   }
+  
+  visiblePos.y = Math.max(visiblePos.y, groundY);
+  
   camera.position.copy(visiblePos);
   controls.getObject().position.copy(visiblePos);
+
+
+
 
   // ──────────────────────────────────────────────────
   // (F) レンダリング

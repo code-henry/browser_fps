@@ -15,7 +15,7 @@ export function setupControls(camera) {
     if (e.code === 'KeyA') move.left = true;
     if (e.code === 'KeyD') move.right = true;
     if (e.code === 'Space' && canJump) {
-      velocity.y += 3;  // ジャンプ力
+      velocity.y += 1.3;  // ジャンプ力
       canJump = false;
     }
   });
@@ -36,7 +36,7 @@ export function handleMovement(controls) {
 
   velocity.x -= velocity.x * damping * delta;
   velocity.z -= velocity.z * damping * delta;
-  velocity.y -= 9.8 * delta; // 重力
+  velocity.y -= 4.8 * delta; // 重力
 
   if (move.forward) velocity.z += speed * delta;
   if (move.backward) velocity.z -= speed * delta;
