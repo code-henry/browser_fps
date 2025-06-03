@@ -2,7 +2,7 @@
 
 import * as THREE from './three.module.js';
 import { createScene } from './scene.js';
-import { setupControls, handleMovement } from './controls.js';
+import { setupControls, handleMovement, handleMovementHorizontalOnly } from './controls.js';
 
 // ----- 1. シーン・カメラ・レンダラーの初期化 -----
 const { scene, camera, renderer } = createScene();
@@ -18,9 +18,25 @@ let playerVelocity = new THREE.Vector3(0, 0, 0);
 
 // 重力ベクトル（毎フレーム必ず適用）
 const gravity = new THREE.Vector3(0, -80.8, 0);
+const gravitySmall = new THREE.Vector3(0, -4.8, 0);
 
 // 減衰係数（空気抵抗相当）
 const dampingCoeff = 1.0;
+
+
+
+
+
+// ──────────── ここからスライディング用パラメータ ────────────
+// スライディング中の摩擦係数（0.0～1.0）：1 に近いほど減衰が弱い
+let slideFriction = 0.8;
+
+// スライディングを「終了」とみなす速度の下限値
+let slideStopThreshold = 0.1;
+// ──────────── スライディング用パラメータここまで ────────────
+
+
+
 
 //
 // 4. ワイヤー関連 スピード・パワー調整パラメータ
@@ -58,6 +74,12 @@ const rightAnchor = new THREE.Vector3();
 
 // ※ skipMovementForFrames は廃止
 let isInertiaMode = false;
+
+
+let isSliding = false;
+
+let slideJumped = false;
+
 
 const visiblePos = playerPos.clone();
 
@@ -271,6 +293,16 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') {
     turboMode = true;
   }
+
+
+  if (e.code === 'Space' && isSliding) {
+    // 「まだスライド中」のまま、垂直だけ飛ぶ
+    slideJumped = true;             // ジャンプ開始をマーク
+    // isSliding はそのまま true のまま維持
+    // isInertiaMode は使わない
+  }
+
+
 });
 
 window.addEventListener('keyup', (e) => {
@@ -319,8 +351,8 @@ function animate() {
   // ──────────────────────────────────────────────────
   // (B) 常に適用する物理演算（重力・減衰・ワイヤー張力・速度更新）
   // ──────────────────────────────────────────────────
-  // 1) 合計力の初期化（重力）
-  let totalForce = gravity.clone();
+  // 1) 合計力の初期化（重力をコピー）
+  const totalForce = gravity.clone();
   const eps = 0.1;
 
   // 2) 左ワイヤー張力
@@ -385,43 +417,84 @@ function animate() {
     playerVelocity.z *= scale;
   }
 
+  // (C) 位置更新＆着地判定：
+  //   • ワイヤー中 … 全成分（x,y,z） velocity 適用
+  //   • 慣性中 … 空中で重力＋減衰による自由落下 → 床着地したらスライディング移行
+  //   • スライディング中 … 垂直成分をゼロにして床に張り付け、水平成分だけ慣性継続
+  //   • 通常移動 … handleMovement() による位置更新
   // ──────────────────────────────────────────────────
-  // (C) 位置更新（通常移動 or 慣性移動 or ワイヤー移動）
-  // ──────────────────────────────────────────────────
-  // if (isGrappleLeft || isGrappleRight || isInertiaMode) {
-  //   // ワイヤー中 or 慣性中は、「速度ベクトル」による移動
-  //   playerPos.add(playerVelocity.clone().multiplyScalar(delta));
-  // }
 
   const groundY = 5;
-
-  if (isGrappleLeft || isGrappleRight || isInertiaMode) {
-    // 【ポイント】ワイヤー中は「地面スナップをかけない」。nextY チェックは慣性モード中だけ行う
-    if (isInertiaMode) {
-      //―― 慣性移動中は“次フレームで地面を下回るか”をチェック――
-      const nextY = playerPos.y + playerVelocity.y * delta;
-      if (nextY < groundY) {
-        // “着地フレーム” のみ地面に張り付け
-        playerPos.y = groundY;
-        playerVelocity.y = 0;
-        isInertiaMode = false;
-      } else {
-        // 地面を下回らない → 通常どおり落下
-        playerPos.add(playerVelocity.clone().multiplyScalar(delta));
-      }
-    } else {
-      // ワイヤー中（isGrappleLeft || isGrappleRight）は地面制限ナシで完全に velocity 適用
-      playerPos.add(playerVelocity.clone().multiplyScalar(delta));
-    }
+  if (playerPos.y - 1 <= groundY) {
+    slideJumped = false; // ジャンプフェーズ終了
+    console.log("slideJumped Disabled")
+    // isSliding は true のまま ← 再びスライドフェーズ継続
   }
 
 
+  if (isGrappleLeft || isGrappleRight) {
+    // 【ワイヤー中】
+    // 地面チェックなしで位置更新
+    playerPos.add(playerVelocity.clone().multiplyScalar(delta));
+  }
+  else if (isInertiaMode) {
+    // 【慣性中】
+    const nextY = playerPos.y + playerVelocity.y * delta;
+    if (nextY < groundY) {
+      // “着地した瞬間” → 垂直速度を止め、水平速度だけスライディングに移行
+      playerPos.y = groundY;
+      playerVelocity.y = 0;
+      isInertiaMode = false;
+      isSliding = true;    // ここからスライディングフェーズへ
+    } else {
+      // 空中：自由落下（垂直＋水平）で位置更新
+      playerPos.add(playerVelocity.clone().multiplyScalar(delta));
+    }
+  }
+  else if (isSliding) {
+    // 【新スライディング】1) まず handleMovement で WASD/ジャンプ を反映
+    handleMovementHorizontalOnly(controls);
+    playerPos.copy(controls.getObject().position);
+
+    // 2) 垂直は必ず groundY に固定（地面に張り付け）
+    // playerPos.y = groundY;
+
+    // 3) そこに「水平慣性分」を追加する
+    playerPos.x += playerVelocity.x * delta;
+    playerPos.z += playerVelocity.z * delta;
+
+    // 4) 摩擦的減衰（フリクション）を水平速度にかける
+    playerVelocity.x *= slideFriction;
+    playerVelocity.z *= slideFriction;
+
+
+    if (slideJumped) {
+      console.log("slideJumped")
+      // playerVelocity.y += -gravity.y * 0.05;
+      // playerPos.y += playerVelocity.y * delta;
+      // もし計算順序上ここで重力を追加したい場合は
+      // playerVelocity.add(gravitySmall.clone().multiplyScalar(delta));
+      // を入れてください。
+      // ────────────
+
+      // 着地判定：「飛び上がったあとの落下中に地面を下回るなら再びスライドへ」
+
+    }
 
 
 
+    // 5) 水平速度が閾値未満になったらスライディング終了
+    if (Math.abs(playerVelocity.x) < slideStopThreshold && Math.abs(playerVelocity.z) < slideStopThreshold) {
+      isSliding = false;
+      // スライド終了と同時に、controls.getObject().position を playerPos に合わせておく
+      controls.getObject().position.copy(playerPos);
+    } else {
+      // スライド中は、controls の位置も playerPos と同期しておく
+      controls.getObject().position.copy(playerPos);
+    }
+  }
 
-
-  // 通常移動時はすでに handleMovement() が playerPos を書き換えているため、ここでは何もしない
+  // 通常移動モードでは handleMovement(controls) が playerPos を更新している
 
   // ──────────────────────────────────────────────────
   // (D) 地面スナップ ＆ 着地判定
@@ -449,9 +522,9 @@ function animate() {
   } else {
     visiblePos.copy(playerPos);
   }
-  
+
   visiblePos.y = Math.max(visiblePos.y, groundY);
-  
+
   camera.position.copy(visiblePos);
   controls.getObject().position.copy(visiblePos);
 

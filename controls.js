@@ -58,4 +58,32 @@ export function handleMovement(controls) {
 }
 
 
+export function handleMovementHorizontalOnly(controls) {
+  const delta = 0.016; // 時間の刻み（仮）
+  const speed = 5.0;
+  const damping = 10.0;
+
+  velocity.x -= velocity.x * damping * delta;
+  velocity.z -= velocity.z * damping * delta;
+
+  if (move.forward) velocity.z += speed * delta;
+  if (move.backward) velocity.z -= speed * delta;
+  if (move.left) velocity.x -= speed * delta;
+  if (move.right) velocity.x += speed * delta;
+
+  controls.moveRight(velocity.x);
+  controls.moveForward(velocity.z);
+
+  // const object = controls.getObject();
+  // object.position.y += velocity.y;
+
+  // // 地面で止まる処理
+  // if (object.position.y < 5) {
+  //   velocity.y = 0;
+  //   object.position.y = 5;
+  //   canJump = true;
+  // }
+}
+
+
 
