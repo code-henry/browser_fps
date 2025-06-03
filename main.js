@@ -29,7 +29,7 @@ const dampingCoeff = 1.0;
 
 // ──────────── ここからスライディング用パラメータ ────────────
 // スライディング中の摩擦係数（0.0～1.0）：1 に近いほど減衰が弱い
-let slideFriction = 0.8;
+let slideFriction = 0.9;
 
 // スライディングを「終了」とみなす速度の下限値
 let slideStopThreshold = 0.1;
@@ -427,7 +427,6 @@ function animate() {
   const groundY = 5;
   if (playerPos.y - 1 <= groundY) {
     slideJumped = false; // ジャンプフェーズ終了
-    console.log("slideJumped Disabled")
     // isSliding は true のまま ← 再びスライドフェーズ継続
   }
 
@@ -453,6 +452,8 @@ function animate() {
   }
   else if (isSliding) {
     // 【新スライディング】1) まず handleMovement で WASD/ジャンプ を反映
+    console.log("isSliding")
+
     handleMovementHorizontalOnly(controls);
     playerPos.copy(controls.getObject().position);
 
@@ -469,7 +470,6 @@ function animate() {
 
 
     if (slideJumped) {
-      console.log("slideJumped")
       // playerVelocity.y += -gravity.y * 0.05;
       // playerPos.y += playerVelocity.y * delta;
       // もし計算順序上ここで重力を追加したい場合は
@@ -486,6 +486,7 @@ function animate() {
     // 5) 水平速度が閾値未満になったらスライディング終了
     if (Math.abs(playerVelocity.x) < slideStopThreshold && Math.abs(playerVelocity.z) < slideStopThreshold) {
       isSliding = false;
+      console.log("isSliding OFF")
       // スライド終了と同時に、controls.getObject().position を playerPos に合わせておく
       controls.getObject().position.copy(playerPos);
     } else {
