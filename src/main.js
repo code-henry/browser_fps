@@ -3,9 +3,10 @@
 import * as THREE from './three.module.js';
 import { createScene } from './scene.js';
 import { setupControls, handleMovement, handleMovementHorizontalOnly } from './controls.js';
+import { PLAYER_HEIGHT, PLAYER_RADIUS } from './config.js';
 
 // ----- 1. シーン・カメラ・レンダラーの初期化 -----
-const { scene, camera, renderer } = createScene();
+const { scene, camera, renderer, colliders } = createScene();
 
 // ----- 2. PointerLockControls + WASD 移動 のセットアップ -----
 const controls = setupControls(camera);
@@ -13,7 +14,7 @@ const controls = setupControls(camera);
 //
 // 3. プレイヤー状態・物理パラメータ
 //
-let playerPos = new THREE.Vector3(0, 5, 0);
+let playerPos = new THREE.Vector3(0, PLAYER_HEIGHT, 0);
 let playerVelocity = new THREE.Vector3(0, 0, 0);
 
 // 重力ベクトル（毎フレーム必ず適用）
@@ -29,10 +30,15 @@ const dampingCoeff = 1.0;
 
 // ──────────── ここからスライディング用パラメータ ────────────
 // スライディング中の摩擦係数（0.0～1.0）：1 に近いほど減衰が弱い
-let slideFriction = 0.9;
+// let slideFriction = 0.9; // 元の設定（戻せるように保持）
+let slideFriction = 0.85;   // 調整後：減速をやや強める
 
 // スライディングを「終了」とみなす速度の下限値
 let slideStopThreshold = 0.1;
+
+// 着地（慣性→スライディング切替）時の水平速度低減係数
+// const landingSpeedMultiplier = 1.0; // 元: 低減なし
+const landingSpeedMultiplier = 0.8;     // 調整後：80%に減速
 // ──────────── スライディング用パラメータここまで ────────────
 
 
@@ -56,8 +62,9 @@ let wireTension = 1.0;               // ワイヤーの張り具合（1.0 = 通�
 let swingDamping = 0.8;              // スイング時の縦振動減衰（0.5-0.9推奨）
 
 // === 高速移動用パラメータ ===
-let turboMode = false;               // ターボモード（Shift押下で高速化）
-let turboMultiplier = 2.5;           // ターボ時の速度倍率
+// 旧ターボ機能は無効化（Shiftはダッシュ専用へ）
+const turboMode = false;             // 互換のため残すが常にfalse
+const turboMultiplier = 1.0;         // 効果なし
 let quickReleaseBoost = 1.5;         // ワイヤー解除時の慣性ブースト
 
 // === 追従・カメラパラメータ ===
@@ -82,10 +89,17 @@ let slideJumped = false;
 
 
 const visiblePos = playerPos.clone();
+const hudEl = document.getElementById('hud');
 
 // ワイヤー用表示ジオメトリ
 let leftRope = null;
 let rightRope = null;
+
+// ダッシュ設定（クイッと方向へ上書きダッシュ）
+let dashAvailable = false;                 // ワイヤーを張るとチャージ、使用で消費
+const dashSpeed = 120.0;                   // 上書きダッシュの速度（大幅アップ）
+const dashGraceTime = 0.5;                 // ダッシュ直後の速度クランプ/減衰無効時間
+let dashGraceTimer = 0.0;                  // 残り時間
 
 // Raycastingのセットアップ
 const raycaster = new THREE.Raycaster();
@@ -155,11 +169,13 @@ function deployWire(isLeft) {
 
     console.log('Right wire deployed to building at:', rightAnchor);
   }
+  // ダッシュをリチャージ
+  dashAvailable = true;
 }
 
 
 //
-// 7. リアルタイムパラメータ調整用キーボードショートカット
+// 7. リアルタイムパラメータ調整用キーボードショートカット + ダッシュ
 //
 window.addEventListener('keydown', (e) => {
   // ワイヤー操作
@@ -281,9 +297,9 @@ window.addEventListener('keydown', (e) => {
     console.log('Max Swing Speed:', maxSwingSpeed);
   }
 
-  // ターボモード切り替え
+  // Shift: ワイヤー解除（右のみ）+ 空中限定の単発ダッシュ（旧ターボ一時適用）
   if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') {
-    turboMode = true;
+    tryDash();
   }
 
 
@@ -298,9 +314,7 @@ window.addEventListener('keydown', (e) => {
 });
 
 window.addEventListener('keyup', (e) => {
-  if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') {
-    turboMode = false;
-  }
+  // Shiftは単発動作のため、keyupでは何もしない
 });
 
 //
@@ -318,10 +332,8 @@ function animate() {
 
 
 
-  // ターボモード時の倍率適用
-  const currentSpeedMult = turboMode ?
-    grappleSpeedMultiplier * turboMultiplier :
-    grappleSpeedMultiplier;
+  // ターボ無効。ダッシュは瞬間上書き式なので倍率は一定
+  const currentSpeedMult = grappleSpeedMultiplier;
 
   // ──────────────────────────────────────────────────
   // (A) 移動モードの判定（慣性＝着地まで継続）
@@ -382,14 +394,17 @@ function animate() {
   // totalForce.add(dampingForce);
 
   const horizVel = new THREE.Vector3(playerVelocity.x, 0, playerVelocity.z);
-  const dampingForceHoriz = horizVel.multiplyScalar(-dampingCoeff / currentSpeedMult);
-  totalForce.add(dampingForceHoriz);
+  // ダッシュ直後は減衰を無効化して初速を殺さない
+  if (dashGraceTimer <= 0) {
+    const dampingForceHoriz = horizVel.multiplyScalar(-dampingCoeff / currentSpeedMult);
+    totalForce.add(dampingForceHoriz);
+  }
 
-  // 5) 速度更新
+  // 6) 速度更新
   const acceleration = totalForce.clone();
   playerVelocity.add(acceleration.multiplyScalar(delta));
 
-  // 6) Y方向（垂直）のスイング減衰
+  // 7) Y方向（垂直）のスイング減衰
   // if (isGrappleLeft || isGrappleRight || isInertiaMode) {
   //   playerVelocity.y *= swingDamping;
   // }
@@ -400,13 +415,15 @@ function animate() {
 
 
 
-  // 7) 水平速度制限
+  // 8) 水平速度制限
   const horiz = new THREE.Vector3(playerVelocity.x, 0, playerVelocity.z);
   const currentMaxSpeed = maxSwingSpeed * currentSpeedMult;
-  if (horiz.lengthSq() > currentMaxSpeed * currentMaxSpeed) {
-    const scale = currentMaxSpeed / horiz.length();
-    playerVelocity.x *= scale;
-    playerVelocity.z *= scale;
+  if (dashGraceTimer <= 0) {
+    if (horiz.lengthSq() > currentMaxSpeed * currentMaxSpeed) {
+      const scale = currentMaxSpeed / horiz.length();
+      playerVelocity.x *= scale;
+      playerVelocity.z *= scale;
+    }
   }
 
   // (C) 位置更新＆着地判定：
@@ -416,7 +433,7 @@ function animate() {
   //   • 通常移動 … handleMovement() による位置更新
   // ──────────────────────────────────────────────────
 
-  const groundY = 5;
+  const groundY = PLAYER_HEIGHT;
   if (playerPos.y - 1 <= groundY) {
     slideJumped = false; // ジャンプフェーズ終了
     // isSliding は true のまま ← 再びスライドフェーズ継続
@@ -425,8 +442,9 @@ function animate() {
 
   if (isGrappleLeft || isGrappleRight) {
     // 【ワイヤー中】
-    // 地面チェックなしで位置更新
-    playerPos.add(playerVelocity.clone().multiplyScalar(delta));
+    // 地面チェックなしで位置更新（トンネリング防止にXZをサブステップで解決）
+    moveXZWithCollisions(playerPos, playerVelocity.x, playerVelocity.z, delta, colliders);
+    playerPos.y += playerVelocity.y * delta;
   }
   else if (isInertiaMode) {
     // 【慣性中】
@@ -435,11 +453,16 @@ function animate() {
       // “着地した瞬間” → 垂直速度を止め、水平速度だけスライディングに移行
       playerPos.y = groundY;
       playerVelocity.y = 0;
+      // 着地時に水平速度を軽減
+      // （元: 低減なし。戻す場合は次の2行を削除 or landingSpeedMultiplier を 1.0 に）
+      playerVelocity.x *= landingSpeedMultiplier;
+      playerVelocity.z *= landingSpeedMultiplier;
       isInertiaMode = false;
       isSliding = true;    // ここからスライディングフェーズへ
     } else {
       // 空中：自由落下（垂直＋水平）で位置更新
-      playerPos.add(playerVelocity.clone().multiplyScalar(delta));
+      moveXZWithCollisions(playerPos, playerVelocity.x, playerVelocity.z, delta, colliders);
+      playerPos.y += playerVelocity.y * delta;
     }
   }
   else if (isSliding) {
@@ -453,8 +476,7 @@ function animate() {
     // playerPos.y = groundY;
 
     // 3) そこに「水平慣性分」を追加する
-    playerPos.x += playerVelocity.x * delta;
-    playerPos.z += playerVelocity.z * delta;
+    moveXZWithCollisions(playerPos, playerVelocity.x, playerVelocity.z, delta, colliders);
 
     // 4) 摩擦的減衰（フリクション）を水平速度にかける
     playerVelocity.x *= slideFriction;
@@ -503,6 +525,11 @@ function animate() {
   }
 
   // ──────────────────────────────────────────────────
+  // (D2) 衝突判定（木＝直方体と衝突）
+  // ──────────────────────────────────────────────────
+  resolveCollisions2D(playerPos, PLAYER_RADIUS, colliders);
+
+  // ──────────────────────────────────────────────────
   // (E) カメラ追従（ワイヤー中/慣性中とも同様）
   // ──────────────────────────────────────────────────
   if (isGrappleLeft || isGrappleRight || isInertiaMode) {
@@ -515,11 +542,21 @@ function animate() {
   } else {
     visiblePos.copy(playerPos);
   }
+  // ダッシュ猶予の減衰
+  if (dashGraceTimer > 0) dashGraceTimer -= delta;
 
   visiblePos.y = Math.max(visiblePos.y, groundY);
 
   camera.position.copy(visiblePos);
-  controls.getObject().position.copy(visiblePos);
+  // 物理の実体は playerPos にスナップ（可視はカメラのみスムージング）
+  controls.getObject().position.copy(playerPos);
+
+  // HUD 更新
+  if (hudEl) {
+    const groundY = PLAYER_HEIGHT;
+    const airborne = (playerPos.y > groundY + 0.01) || isGrappleLeft || isGrappleRight;
+    hudEl.textContent = `Dash:${dashAvailable ? 'READY' : '—'}  Air:${airborne ? 'YES' : 'NO'}  L:${isGrappleLeft?'1':'0'} R:${isGrappleRight?'1':'0'}`;
+  }
 
 
 
@@ -637,3 +674,74 @@ window.addEventListener('mousedown', (e) => {
     }
   }
 });
+
+// ──────────────────────────────────────────────────
+// 11. 衝突解決関数（XZ平面のAABBに対する円の押し戻し）
+// ──────────────────────────────────────────────────
+function resolveCollisions2D(pos, radius, aabbs) {
+  for (const c of aabbs) {
+    // プレイヤーの高さが建物の高さ以下にあるとみなし、XZのみチェック
+    if (
+      pos.x > c.minX - radius && pos.x < c.maxX + radius &&
+      pos.z > c.minZ - radius && pos.z < c.maxZ + radius
+    ) {
+      const pushLeft = pos.x - (c.minX - radius);
+      const pushRight = (c.maxX + radius) - pos.x;
+      const pushTop = pos.z - (c.minZ - radius);
+      const pushBottom = (c.maxZ + radius) - pos.z;
+
+      const minPush = Math.min(pushLeft, pushRight, pushTop, pushBottom);
+      if (minPush === pushLeft) pos.x = c.minX - radius;
+      else if (minPush === pushRight) pos.x = c.maxX + radius;
+      else if (minPush === pushTop) pos.z = c.minZ - radius;
+      else pos.z = c.maxZ + radius;
+    }
+  }
+}
+
+// ダッシュ実行ロジック
+function tryDash() {
+  // 条件: チャージあり、かつ（ワイヤー接続中 or 空中）、かつ地上/スライドではない
+  const groundY = PLAYER_HEIGHT;
+  const airborne = (playerPos.y > groundY + 0.01) || isGrappleLeft || isGrappleRight;
+  if (!dashAvailable || !airborne || isSliding) {
+    console.log('Dash unavailable');
+    return;
+  }
+
+  // 右ワイヤーのみ解除（ブーストは付与しない）
+  if (isGrappleRight) {
+    isGrappleRight = false;
+    isInertiaMode = true;
+    if (rightRope) {
+      scene.remove(rightRope);
+      rightRope.geometry.dispose();
+      rightRope.material.dispose();
+      rightRope = null;
+    }
+    console.log('Right wire released by dash');
+  }
+
+  // 見ている方向にクイッと上書きダッシュ（慣性リセット）
+  const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion).normalize();
+  playerVelocity.copy(dir.multiplyScalar(dashSpeed));
+  // 物理統治に移行（通常移動で上書きされないように）
+  isInertiaMode = true;
+  dashGraceTimer = dashGraceTime;
+  dashAvailable = false; // 消費
+  console.log('Dash override!');
+}
+
+// XZ 平面の移動をサブステップで行い、各サブステップでコリジョン解決してトンネリングを防ぐ
+function moveXZWithCollisions(pos, vx, vz, delta, aabbs) {
+  const horizSpeed = Math.hypot(vx, vz);
+  // 1ステップあたりの許容移動距離を 1.5 に設定（薄い木も抜けにくく）
+  const maxStep = 1.5;
+  const steps = Math.max(1, Math.ceil((horizSpeed * delta) / maxStep));
+  const dt = delta / steps;
+  for (let i = 0; i < steps; i++) {
+    pos.x += vx * dt;
+    pos.z += vz * dt;
+    resolveCollisions2D(pos, PLAYER_RADIUS, aabbs);
+  }
+}
