@@ -7,7 +7,8 @@ import {
   TREE_BASE_THICKNESS,
   TREE_THICKNESS_VARIANCE,
   ROBOT_SPAWNS,
-  ROBOT_DIM
+  ROBOT_DIM,
+  ENABLE_BIG_ROBOTS
 } from './config.js';
 
 export function createScene() {
@@ -177,12 +178,14 @@ export function createScene() {
     return group;
   }
 
-  // ロボットを配置
-  for (const spawn of ROBOT_SPAWNS) {
-    const robot = createRobot();
-    // 胴体中心が原点なので、地面に乗せるよう全体を上に持ち上げる
-    robot.position.set(spawn.x, ROBOT_DIM.torso / 2, spawn.z);
-    scene.add(robot);
+  if (ENABLE_BIG_ROBOTS) {
+    // ロボットを配置
+    for (const spawn of ROBOT_SPAWNS) {
+      const robot = createRobot();
+      // 胴体中心が原点なので、地面に乗せるよう全体を上に持ち上げる
+      robot.position.set(spawn.x, ROBOT_DIM.torso / 2, spawn.z);
+      scene.add(robot);
+    }
   }
 
   return { scene, camera, renderer, colliders };

@@ -64,6 +64,18 @@
       border-radius: 4px;
       user-select: none;
     }
+    #gameOver {
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0,0,0,0.6);
+      color: #fff;
+      font: 32px/1.2 sans-serif;
+      user-select: none;
+      z-index: 10;
+    }
   </style>
 </head>
 <body>
@@ -72,6 +84,7 @@
   <!-- Right-click scope overlay target -->
   <div id="scopeOverlay"></div>
   <div id="hud"></div>
+  <div id="gameOver">GAME OVER</div>
 
   <!-- 既存の main.js (モジュール) を読み込む -->
   <script type="module" src="./src/main.js"></script>

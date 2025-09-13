@@ -23,3 +23,9 @@ export const ROBOT_DIM = {
   armHeightRatio: 0.6,            // 腕の取付高さ（胴体高さに対する比）
   reserveMargin: 60               // 予約領域の余白
 };
+
+// 大型ロボットの生成フラグ（敵実装のため一時無効化可）
+export const ENABLE_BIG_ROBOTS = false;
+
+// 一時的にシュート（左クリック命中表示）機能を無効化
+export const SHOOT_ENABLED = false;

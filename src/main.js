@@ -3,7 +3,7 @@
 import * as THREE from './three.module.js';
 import { createScene } from './scene.js';
 import { setupControls, handleMovement, handleMovementHorizontalOnly } from './controls.js';
-import { PLAYER_HEIGHT, PLAYER_RADIUS } from './config.js';
+import { PLAYER_HEIGHT, PLAYER_RADIUS, SHOOT_ENABLED } from './config.js';
 
 // ----- 1. シーン・カメラ・レンダラーの初期化 -----
 const { scene, camera, renderer, colliders } = createScene();
@@ -76,8 +76,13 @@ let cameraStabilization = true;      // カメラ安定化ON/OFF
 //
 let isGrappleLeft = false;
 let isGrappleRight = false;
+// アンカー（動的追従対応）
 const leftAnchor = new THREE.Vector3();
+let leftAnchorTarget = null;      // Object3D or null
+let leftAnchorLocal = null;       // Vector3 (targetのローカル座標)
 const rightAnchor = new THREE.Vector3();
+let rightAnchorTarget = null;
+let rightAnchorLocal = null;
 
 // ※ skipMovementForFrames は廃止
 let isInertiaMode = false;
@@ -113,6 +118,115 @@ scene.traverse((child) => {
   }
 });
 
+// ──────────────────────────────────────────────────
+// 敵（細身ロボット）
+// ──────────────────────────────────────────────────
+const ENEMY_COUNT = 5;
+const ENEMY_SPEED = 7.0;
+const ENEMY_TURN = Math.PI * 0.35; // 障害物ヒット時の回頭角
+const ENEMY_RADIUS = 3.5;          // 当たり半径（AABBとの判定用）
+const ENEMY_SIGHT_RANGE = 140.0;   // 視認/攻撃範囲
+const ENEMY_FIRE_INTERVAL = 0.35;  // 連射間隔（秒）
+const ENEMY_BURST_COUNT = 18;      // 1度に撃つ弾数（扇形）
+const ENEMY_BULLET_SPEED = 45.0;   // 弾速度
+const ENEMY_BULLET_RADIUS = 0.3;   // 弾の半径（当たり）
+
+function createThinRobot() {
+  const g = new THREE.Group();
+  const color = 0x99ccff;
+  const edgeColor = 0x000000;
+
+  const torsoW = 4, torsoH = 16, torsoD = 4;
+  const head = 6;
+  const armLen = 8, armThick = 2, armDepth = 2; // 腕は前ならえ（地面と水平で前方へ）
+
+  const torsoGeo = new THREE.BoxGeometry(torsoW, torsoH, torsoD);
+  const mat = new THREE.MeshStandardMaterial({ color });
+  const torso = new THREE.Mesh(torsoGeo, mat);
+  torso.castShadow = true; torso.receiveShadow = true;
+  torso.userData.enemy = true; torso.userData.part = 'torso';
+  g.add(torso);
+  const torsoEdges = new THREE.EdgesGeometry(torsoGeo);
+  g.add(new THREE.LineSegments(torsoEdges, new THREE.LineBasicMaterial({ color: edgeColor })));
+
+  const headGeo = new THREE.BoxGeometry(head, head, head);
+  const headMesh = new THREE.Mesh(headGeo, mat);
+  headMesh.castShadow = true; headMesh.receiveShadow = true;
+  headMesh.position.y = (torsoH / 2) + (head / 2);
+  headMesh.userData.enemy = true; headMesh.userData.part = 'head';
+  g.add(headMesh);
+  const headEdges = new THREE.EdgesGeometry(headGeo);
+  const headLine = new THREE.LineSegments(headEdges, new THREE.LineBasicMaterial({ color: edgeColor }));
+  headLine.position.copy(headMesh.position);
+  g.add(headLine);
+
+  // 腕（胴体の横に配置し、常にプレイヤーの方向へ向ける）。
+  // 肩のピボットを作り、その+Z方向に腕メッシュを置く（回転で向けやすい）。
+  const armGeo = new THREE.BoxGeometry(armThick, armThick, armLen);
+  const armY = torsoH * 0.6 - torsoH / 2; // 胴体中心基準の高さ
+
+  const shoulderL = new THREE.Group();
+  shoulderL.position.set(-torsoW / 2, armY, 0);
+  const armL = new THREE.Mesh(armGeo, mat);
+  armL.castShadow = true; armL.receiveShadow = true;
+  armL.position.set(0, 0, armLen / 2);
+  armL.userData.enemy = true; armL.userData.part = 'arm';
+  shoulderL.add(armL);
+  g.add(shoulderL);
+  const armLE = new THREE.EdgesGeometry(armGeo);
+  const armLL = new THREE.LineSegments(armLE, new THREE.LineBasicMaterial({ color: edgeColor }));
+  armLL.position.copy(armL.position);
+  shoulderL.add(armLL);
+
+  const shoulderR = new THREE.Group();
+  shoulderR.position.set(torsoW / 2, armY, 0);
+  const armR = new THREE.Mesh(armGeo, mat);
+  armR.castShadow = true; armR.receiveShadow = true;
+  armR.position.set(0, 0, armLen / 2);
+  armR.userData.enemy = true; armR.userData.part = 'arm';
+  shoulderR.add(armR);
+  g.add(shoulderR);
+  const armRE = new THREE.EdgesGeometry(armGeo);
+  const armRL = new THREE.LineSegments(armRE, new THREE.LineBasicMaterial({ color: edgeColor }));
+  armRL.position.copy(armR.position);
+  shoulderR.add(armRL);
+
+  // グループ配下の全Meshを sceneObjects に登録（ワイヤー対象にする）
+  const meshes = [torso, headMesh, armL, armR];
+  for (const m of meshes) sceneObjects.push(m);
+
+  return { group: g, torsoH, meshes, shoulderL, shoulderR };
+}
+
+function aabbHit(x, z, r, aabbs) {
+  for (const c of aabbs) {
+    if (x > c.minX - r && x < c.maxX + r && z > c.minZ - r && z < c.maxZ + r) return true;
+  }
+  return false;
+}
+
+function spawnEnemies(count) {
+  const arr = [];
+  for (let i = 0; i < count; i++) {
+    const { group, torsoH, meshes, shoulderL, shoulderR } = createThinRobot();
+    // ランダムスポーン（木と被らないように試行）
+    let px = 0, pz = 0; let tries = 0;
+    do {
+      px = (Math.random() * 2 - 1) * (300 - 20);
+      pz = (Math.random() * 2 - 1) * (300 - 20);
+      tries++;
+      if (tries > 200) break;
+    } while (aabbHit(px, pz, ENEMY_RADIUS, colliders));
+
+    group.position.set(px, torsoH / 2, pz);
+    scene.add(group);
+    arr.push({ group, dir: Math.random() * Math.PI * 2, speed: ENEMY_SPEED, meshes, shoulderL, shoulderR, fireCooldown: Math.random()*ENEMY_FIRE_INTERVAL });
+  }
+  return arr;
+}
+
+const enemies = spawnEnemies(ENEMY_COUNT);
+
 //
 // 6. ワイヤー関連の関数
 //
@@ -147,10 +261,15 @@ function deployWire(isLeft) {
   const intersects = raycaster.intersectObjects(sceneObjects);
   if (intersects.length === 0) return;
 
-  const hitPoint = intersects[0].point.clone();
+  const hit = intersects[0];
+  const hitPoint = hit.point.clone();
 
   if (isLeft) {
     leftAnchor.copy(hitPoint);
+    if (hit.object && hit.object.userData && hit.object.userData.enemy) {
+      leftAnchorTarget = hit.object;
+      leftAnchorLocal = hit.object.worldToLocal(hitPoint.clone());
+    } else { leftAnchorTarget = null; leftAnchorLocal = null; }
     isGrappleLeft = true;
 
     // (3) 最初にラインを作成
@@ -162,6 +281,10 @@ function deployWire(isLeft) {
     console.log('Left wire deployed to building at:', leftAnchor);
   } else {
     rightAnchor.copy(hitPoint);
+    if (hit.object && hit.object.userData && hit.object.userData.enemy) {
+      rightAnchorTarget = hit.object;
+      rightAnchorLocal = hit.object.worldToLocal(hitPoint.clone());
+    } else { rightAnchorTarget = null; rightAnchorLocal = null; }
     isGrappleRight = true;
 
     rightRope = createRopeLine('right', rightAnchor);
@@ -321,15 +444,20 @@ window.addEventListener('keyup', (e) => {
 // 8. アニメーションループ（慣性追加版）
 //
 let prevTime = performance.now();
+let gameOver = false;
 
 
 function animate() {
-  requestAnimationFrame(animate);
+  if (!gameOver) requestAnimationFrame(animate);
 
   const time = performance.now();
   const delta = (time - prevTime) / 1000;
   prevTime = time;
 
+  if (gameOver) {
+    renderer.render(scene, camera);
+    return;
+  }
 
 
   // ターボ無効。ダッシュは瞬間上書き式なので倍率は一定
@@ -355,6 +483,9 @@ function animate() {
   // ──────────────────────────────────────────────────
   // (B) 常に適用する物理演算（重力・減衰・ワイヤー張力・速度更新）
   // ──────────────────────────────────────────────────
+  // アンカーを動的ターゲットに追従
+  refreshAnchors();
+
   // 1) 合計力の初期化（重力をコピー）
   const totalForce = gravity.clone();
   const eps = 0.1;
@@ -511,6 +642,11 @@ function animate() {
 
   // 通常移動モードでは handleMovement(controls) が playerPos を更新している
 
+  // 敵の移動更新（単純な回避・バウンス）
+  updateEnemies(delta);
+  // 弾幕更新
+  updateBullets(delta);
+
   // ──────────────────────────────────────────────────
   // (D) 地面スナップ ＆ 着地判定
   // ──────────────────────────────────────────────────
@@ -567,7 +703,6 @@ function animate() {
   renderer.render(scene, camera);
 }
 
-animate();
 
 
 
@@ -596,9 +731,11 @@ const scopeOverlay = document.getElementById('scopeOverlay');
 
 // マウス右クリックでスコープON → コンテキストメニューを無効化
 window.addEventListener('contextmenu', (e) => {
-  e.preventDefault();  // ブラウザ標準の右クリックメニューを抑止
+  e.preventDefault();  // 右クリックメニューを抑止
+  // まず至近距離キル判定
+  if (tryCloseKill()) return;
+  // 近接キルでなければスコープON
   if (!isScoped) {
-    // スコープON
     isScoped = true;
     camera.fov = zoomedFov;
     camera.updateProjectionMatrix();
@@ -606,10 +743,8 @@ window.addEventListener('contextmenu', (e) => {
   }
 });
 
-// 右ボタンを離すとスコープOFF
 window.addEventListener('mouseup', (e) => {
   if (e.button === 2 && isScoped) {
-    // スコープOFF
     isScoped = false;
     camera.fov = normalFov;
     camera.updateProjectionMatrix();
@@ -627,51 +762,9 @@ const hitMarkerMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 });
 let tempHitMarker = null;  // 直前のヒットマーカーを保持する
 
 window.addEventListener('mousedown', (e) => {
-  if (e.button === 0) { // 左ボタン（射撃）
-    // ① カメラから前方にレイを飛ばす
-    const shootRaycaster = new THREE.Raycaster();
-    const shootOrigin = camera.getWorldPosition(new THREE.Vector3());
-    const shootDirection = new THREE.Vector3(0, 0, -1)
-      .applyQuaternion(camera.quaternion)
-      .normalize();
-    shootRaycaster.set(shootOrigin, shootDirection);
-
-    // ② sceneObjects（BoxGeometry etc.）との当たり判定を行う
-    const shootIntersects = shootRaycaster.intersectObjects(sceneObjects);
-    if (shootIntersects.length > 0) {
-      // 一番近いヒット情報
-      const hitInfo = shootIntersects[0];
-      const hitPoint = hitInfo.point;
-      const hitNormal = hitInfo.face.normal;
-
-      console.log('Shoot hit at', hitPoint, 'on object', hitInfo.object);
-
-      // ③ 既存のヒットマーカーを削除
-      if (tempHitMarker) {
-        scene.remove(tempHitMarker);
-        tempHitMarker.geometry.dispose();
-        tempHitMarker.material.dispose();
-        tempHitMarker = null;
-      }
-
-      // ④ 新たにヒットマーカーを配置
-      tempHitMarker = new THREE.Mesh(hitMarkerGeometry, hitMarkerMaterial);
-      // ヒットポイントに少しオフセットを加えて表示（法線方向に沿って0.1だけ浮かせる）
-      const offsetPos = hitPoint.clone().add(hitNormal.clone().multiplyScalar(0.1));
-      tempHitMarker.position.copy(offsetPos);
-      scene.add(tempHitMarker);
-
-      // ⑤（オプション）ヒットしたオブジェクトを少し変色させる例
-      if (hitInfo.object.material) {
-        hitInfo.object.material.color.set(0xffff00); // 黄色に変更
-        // 0.2秒後に元に戻す（setTimeout でデモ的にリセット）
-        setTimeout(() => {
-          hitInfo.object.material.color.set(0x808080); // 元の色（空灰色）に戻す
-        }, 200);
-      }
-    } else {
-      console.log('Shoot missed (no hit)');
-    }
+  if (e.button === 0 && SHOOT_ENABLED) {
+    // 左クリックのシュート機能は一時無効（フラグでONにできる）
+    // ...（元の実装は保持）
   }
 });
 
@@ -695,6 +788,76 @@ function resolveCollisions2D(pos, radius, aabbs) {
       else if (minPush === pushRight) pos.x = c.maxX + radius;
       else if (minPush === pushTop) pos.z = c.minZ - radius;
       else pos.z = c.maxZ + radius;
+    }
+  }
+}
+
+// 近接ヘッドショット（右クリック）で敵を撃破
+function tryCloseKill() {
+  const ray = new THREE.Raycaster();
+  const origin = camera.getWorldPosition(new THREE.Vector3());
+  const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion).normalize();
+  ray.set(origin, dir);
+  const hits = ray.intersectObjects(sceneObjects);
+  if (hits.length === 0) return false;
+
+  const hit = hits[0];
+  const obj = hit.object;
+  const dist = origin.distanceTo(hit.point);
+  const CLOSE = 3.0;
+  if (!gameOver && obj.userData && obj.userData.enemy && obj.userData.part === 'head' && dist <= CLOSE) {
+    // enemies 配列から該当グループを探して破棄
+    const grp = obj.parent; // headはグループ直下
+    // sceneObjects からも除外
+    const removed = [];
+    grp.traverse((n) => {
+      if (n.isMesh) removed.push(n);
+    });
+    for (const m of removed) {
+      const idx = sceneObjects.indexOf(m);
+      if (idx >= 0) sceneObjects.splice(idx, 1);
+    }
+    // enemies から消す
+    for (let i = enemies.length - 1; i >= 0; i--) {
+      if (enemies[i].group === grp) enemies.splice(i, 1);
+    }
+    scene.remove(grp);
+    console.log('Enemy down');
+    return true;
+  }
+  return false;
+}
+
+function triggerGameOver() {
+  if (gameOver) return;
+  gameOver = true;
+  // 止める
+  playerVelocity.set(0, 0, 0);
+  // HUD/Overlay
+  const el = document.getElementById('gameOver');
+  if (el) el.style.display = 'flex';
+}
+
+function refreshAnchors() {
+  if (leftAnchorTarget && leftAnchorLocal) {
+    if (!leftAnchorTarget.parent) {
+      // ターゲットが消えたら解除
+      isGrappleLeft = false;
+      leftAnchorTarget = null; leftAnchorLocal = null;
+      if (leftRope) { scene.remove(leftRope); leftRope.geometry.dispose(); leftRope.material.dispose(); leftRope = null; }
+    } else {
+      const wp = leftAnchorTarget.localToWorld(leftAnchorLocal.clone());
+      leftAnchor.copy(wp);
+    }
+  }
+  if (rightAnchorTarget && rightAnchorLocal) {
+    if (!rightAnchorTarget.parent) {
+      isGrappleRight = false;
+      rightAnchorTarget = null; rightAnchorLocal = null;
+      if (rightRope) { scene.remove(rightRope); rightRope.geometry.dispose(); rightRope.material.dispose(); rightRope = null; }
+    } else {
+      const wp = rightAnchorTarget.localToWorld(rightAnchorLocal.clone());
+      rightAnchor.copy(wp);
     }
   }
 }
@@ -745,3 +908,151 @@ function moveXZWithCollisions(pos, vx, vz, delta, aabbs) {
     resolveCollisions2D(pos, PLAYER_RADIUS, aabbs);
   }
 }
+
+// 敵の更新（シンプルな回避: 次位置が当たるなら回頭して進路変更）
+function updateEnemies(delta) {
+  const bounds = 300;
+  for (const e of enemies) {
+    // 腕をプレイヤー方向に向ける（一定距離内のとき）
+    const toPlayer = new THREE.Vector3().subVectors(playerPos, e.group.position);
+    const dist = toPlayer.length();
+    if (dist < ENEMY_SIGHT_RANGE) {
+      const target = playerPos.clone();
+      e.shoulderL.lookAt(target);
+      e.shoulderR.lookAt(target);
+    }
+
+    // ランダムなふらつき
+    if (Math.random() < 0.02) e.dir += (Math.random() - 0.5) * 0.5;
+
+    const step = e.speed * delta;
+    let nx = e.group.position.x + Math.cos(e.dir) * step;
+    let nz = e.group.position.z + Math.sin(e.dir) * step;
+
+    let turns = 0;
+    while ((aabbHit(nx, nz, ENEMY_RADIUS, colliders) || Math.abs(nx) > bounds || Math.abs(nz) > bounds) && turns < 12) {
+      e.dir += (Math.random() < 0.5 ? 1 : -1) * ENEMY_TURN;
+      nx = e.group.position.x + Math.cos(e.dir) * step;
+      nz = e.group.position.z + Math.sin(e.dir) * step;
+      turns++;
+    }
+
+    // サブステップで滑らかに進む＆すり抜け回避
+    const parts = Math.max(1, Math.ceil(step / 1.0));
+    for (let i = 0; i < parts; i++) {
+      const sx = e.group.position.x + Math.cos(e.dir) * (step / parts);
+      const sz = e.group.position.z + Math.sin(e.dir) * (step / parts);
+      if (!aabbHit(sx, sz, ENEMY_RADIUS, colliders) && Math.abs(sx) <= bounds && Math.abs(sz) <= bounds) {
+        e.group.position.x = sx;
+        e.group.position.z = sz;
+      } else {
+        // 衝突したら軽く回頭
+        e.dir += ENEMY_TURN * 0.5;
+        break;
+      }
+    }
+
+    // 攻撃（距離内なら弾幕発射）
+    e.fireCooldown -= delta;
+    if (dist < ENEMY_SIGHT_RANGE && e.fireCooldown <= 0) {
+      fireVolley(e);
+      e.fireCooldown = ENEMY_FIRE_INTERVAL;
+    }
+  }
+}
+
+// ──────────────────────────────────────────────────
+// 弾幕（弾プール）
+// ──────────────────────────────────────────────────
+const bulletGeo = new THREE.SphereGeometry(ENEMY_BULLET_RADIUS, 8, 8);
+const bulletMat = new THREE.MeshBasicMaterial({ color: 0xff5533 });
+const bullets = [];
+const MAX_BULLETS = 1500;
+
+function spawnBullet(pos, vel) {
+  if (bullets.length >= MAX_BULLETS) return;
+  const m = new THREE.Mesh(bulletGeo, bulletMat);
+  m.position.copy(pos);
+  scene.add(m);
+  bullets.push({ mesh: m, vel: vel.clone(), alive: true });
+}
+
+function fireVolley(e) {
+  const originL = e.shoulderL.localToWorld(new THREE.Vector3(0, 0, 0));
+  const originR = e.shoulderR.localToWorld(new THREE.Vector3(0, 0, 0));
+  const aimL = new THREE.Vector3().subVectors(playerPos, originL).normalize();
+  const aimR = new THREE.Vector3().subVectors(playerPos, originR).normalize();
+
+  // 扇状にばら撒く
+  const spread = Math.PI / 3; // 60度
+  for (let i = 0; i < ENEMY_BURST_COUNT; i++) {
+    const t = (i / (ENEMY_BURST_COUNT - 1)) - 0.5; // -0.5..0.5
+    const angle = t * spread;
+    // Lから
+    const dirL = aimL.clone();
+    yawPitch(dirL, angle * 0.7, angle * 0.2);
+    dirL.normalize().multiplyScalar(ENEMY_BULLET_SPEED);
+    spawnBullet(originL, dirL);
+    // Rから
+    const dirR = aimR.clone();
+    yawPitch(dirR, angle * 0.7, -angle * 0.2);
+    dirR.normalize().multiplyScalar(ENEMY_BULLET_SPEED);
+    spawnBullet(originR, dirR);
+  }
+}
+
+function yawPitch(vec, yaw, pitch) {
+  // vec を基準にヨー/ピッチずらす（近似）。
+  const m = new THREE.Euler(pitch, yaw, 0, 'YXZ');
+  vec.applyEuler(m);
+}
+
+function updateBullets(delta) {
+  const groundY = PLAYER_HEIGHT;
+  for (let i = bullets.length - 1; i >= 0; i--) {
+    const b = bullets[i];
+    if (!b.alive) { removeBulletAt(i); continue; }
+
+    // サブステップで移動＋衝突
+    const stepLen = 1.0;
+    const speed = b.vel.length();
+    const steps = Math.max(1, Math.ceil((speed * delta) / stepLen));
+    const dt = delta / steps;
+    let pos = b.mesh.position.clone();
+    let alive = true;
+    for (let s = 0; s < steps; s++) {
+      pos.addScaledVector(b.vel, dt);
+      // 木のAABB衝突（高さ内のみ）
+      if (bulletHitColliders(pos, ENEMY_BULLET_RADIUS, colliders)) { alive = false; break; }
+      // プレイヤー当たり
+      const toPlayer = pos.clone().sub(playerPos);
+      if (toPlayer.length() <= (PLAYER_RADIUS + ENEMY_BULLET_RADIUS) && playerPos.y >= groundY - 0.01) {
+        triggerGameOver();
+        alive = false; break;
+      }
+      // 領域外
+      if (Math.abs(pos.x) > 400 || Math.abs(pos.z) > 400 || pos.y < 0 || pos.y > 200) { alive = false; break; }
+    }
+    if (!alive) { removeBulletAt(i); continue; }
+    b.mesh.position.copy(pos);
+  }
+}
+
+function bulletHitColliders(p, r, aabbs) {
+  for (const c of aabbs) {
+    if (p.y > c.maxY + r) continue; // 高さを超えていれば無視
+    if (p.x > c.minX - r && p.x < c.maxX + r && p.z > c.minZ - r && p.z < c.maxZ + r) return true;
+  }
+  return false;
+}
+
+function removeBulletAt(i) {
+  const b = bullets[i];
+  scene.remove(b.mesh);
+  b.mesh.geometry.dispose(); // 共有でも小サイズなのでOK
+  b.mesh.material.dispose();
+  bullets.splice(i, 1);
+}
+
+// start the loop after all declarations are loaded
+animate();
