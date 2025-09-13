@@ -1,0 +1,57 @@
+# -------- General OS/Editor junk --------
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+*.tmp
+*.temp
+.idea/
+.vscode/
+
+# -------- Environment files --------
+# Keep secrets out of git; commit an example instead
+.env
+.env.*
+!.env.example
+
+# -------- Logs --------
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+*.log
+
+# -------- Node/JS builds & caches --------
+node_modules/
+dist/
+build/
+out/
+.cache/
+.parcel-cache/
+.vite/
+.next/
+.nuxt/
+.svelte-kit/
+.turbo/
+.eslintcache
+coverage/
+.nyc_output/
+*.tsbuildinfo
+
+# -------- Yarn PnP (if used later) --------
+.pnp.*
+
+# -------- Hosting/platform artifacts --------
+.vercel/
+.netlify/
+.firebase/
+
+# -------- Project assets (large/raw) --------
+# Keep distributable assets (e.g., .mp3) tracked, but ignore raw project files
+# Suggest placing heavy source files under assets/raw/
+assets/raw/
+*.flp
+*.wav
+
