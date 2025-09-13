@@ -103,8 +103,10 @@ scene.traverse((child) => {
 // 6. ワイヤー関連の関数
 //
 function createRopeLine(side, anchor) {
-  const points = [playerPos.clone(), anchor.clone()];
-  const geometry = new THREE.BufferGeometry().setFromPoints(points);
+  // ここでは必ず playerPos を始点にする
+  const p0 = playerPos.clone();
+  const p1 = anchor.clone();
+  const geometry = new THREE.BufferGeometry().setFromPoints([p0, p1]);
   const material = new THREE.LineBasicMaterial({
     color: side === 'left' ? 0x00ff00 : 0xff0000,
     linewidth: 3
@@ -115,56 +117,46 @@ function createRopeLine(side, anchor) {
 }
 
 function updateRopeLine(rope, anchor) {
-  if (rope) {
-    const points = [playerPos.clone(), anchor.clone()];
-    rope.geometry.setFromPoints(points);
-    rope.geometry.attributes.position.needsUpdate = true;
-  }
+  if (!rope) return;
+  const p0 = playerPos.clone();
+  const p1 = anchor.clone();
+  rope.geometry.setFromPoints([p0, p1]);
+  rope.geometry.attributes.position.needsUpdate = true;
 }
 
 function deployWire(isLeft) {
-  // カメラの向いている方向にraycast
+  // (1) playerPos を最新に同期
+  playerPos.copy(controls.getObject().position);
+
+  // (2) レイキャストを飛ばす
   raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
   const intersects = raycaster.intersectObjects(sceneObjects);
+  if (intersects.length === 0) return;
 
-  if (intersects.length > 0) {
-    // 建物に当たった場合
-    const hitPoint = intersects[0].point.clone();
+  const hitPoint = intersects[0].point.clone();
 
-    if (isLeft) {
-      leftAnchor.copy(hitPoint);
-      isGrappleLeft = true;
-      leftRope = createRopeLine('left', leftAnchor);
-      console.log('Left wire deployed to building at:', leftAnchor);
-    } else {
-      rightAnchor.copy(hitPoint);
-      isGrappleRight = true;
-      rightRope = createRopeLine('right', rightAnchor);
-      console.log('Right wire deployed to building at:', rightAnchor);
-    }
+  if (isLeft) {
+    leftAnchor.copy(hitPoint);
+    isGrappleLeft = true;
+
+    // (3) 最初にラインを作成
+    leftRope = createRopeLine('left', leftAnchor);
+
+    // （ここで即座に updateRopeLine を呼んで、同じフレーム内で「playerPos→アンカー」に上書きする）
+    updateRopeLine(leftRope, leftAnchor);
+
+    console.log('Left wire deployed to building at:', leftAnchor);
   } else {
-    // 建物に当たらなかった場合は、適当な距離にアンカーを設定
-    const rayOrigin = camera.position.clone();
-    const rayDir = new THREE.Vector3(0, 0, -1);
-    rayDir.applyQuaternion(camera.quaternion).normalize();
+    rightAnchor.copy(hitPoint);
+    isGrappleRight = true;
 
-    const grappleDistance = 25;
-    const anchor = rayOrigin.add(rayDir.multiplyScalar(grappleDistance));
-    anchor.y = Math.max(anchor.y, 10); // 高さ調整
+    rightRope = createRopeLine('right', rightAnchor);
+    updateRopeLine(rightRope, rightAnchor);
 
-    if (isLeft) {
-      leftAnchor.copy(anchor);
-      isGrappleLeft = true;
-      leftRope = createRopeLine('left', leftAnchor);
-      console.log('Left wire deployed to air at:', leftAnchor);
-    } else {
-      rightAnchor.copy(anchor);
-      isGrappleRight = true;
-      rightRope = createRopeLine('right', rightAnchor);
-      console.log('Right wire deployed to air at:', anchor);
-    }
+    console.log('Right wire deployed to building at:', rightAnchor);
   }
 }
+
 
 //
 // 7. リアルタイムパラメータ調整用キーボードショートカット
@@ -539,3 +531,109 @@ function animate() {
 }
 
 animate();
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// ──────────────────────────────────────────────────
+// 9.「スコープ切り替え」＆「射撃」イベントリスナーを追加
+// ──────────────────────────────────────────────────
+
+// 2つの状態を管理するフラグとパラメータ
+let isScoped = false;
+const normalFov = camera.fov;       // デフォルトの画角
+const zoomedFov = normalFov / 2;    // スコープ時の画角（好みで調整してください）
+const scopeOverlay = document.getElementById('scopeOverlay');
+
+// マウス右クリックでスコープON → コンテキストメニューを無効化
+window.addEventListener('contextmenu', (e) => {
+  e.preventDefault();  // ブラウザ標準の右クリックメニューを抑止
+  if (!isScoped) {
+    // スコープON
+    isScoped = true;
+    camera.fov = zoomedFov;
+    camera.updateProjectionMatrix();
+    scopeOverlay.style.display = 'block';
+  }
+});
+
+// 右ボタンを離すとスコープOFF
+window.addEventListener('mouseup', (e) => {
+  if (e.button === 2 && isScoped) {
+    // スコープOFF
+    isScoped = false;
+    camera.fov = normalFov;
+    camera.updateProjectionMatrix();
+    scopeOverlay.style.display = 'none';
+  }
+});
+
+// ──────────────────────────────────────────────────
+// 10.「左クリックで射撃（Raycast）」を実装
+// ──────────────────────────────────────────────────
+
+// ヒットマーカー用のメッシュを用意しておく（簡易的に小さな球を衝突点に表示する例）
+const hitMarkerGeometry = new THREE.SphereGeometry(0.2, 8, 8);
+const hitMarkerMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+let tempHitMarker = null;  // 直前のヒットマーカーを保持する
+
+window.addEventListener('mousedown', (e) => {
+  if (e.button === 0) { // 左ボタン（射撃）
+    // ① カメラから前方にレイを飛ばす
+    const shootRaycaster = new THREE.Raycaster();
+    const shootOrigin = camera.getWorldPosition(new THREE.Vector3());
+    const shootDirection = new THREE.Vector3(0, 0, -1)
+      .applyQuaternion(camera.quaternion)
+      .normalize();
+    shootRaycaster.set(shootOrigin, shootDirection);
+
+    // ② sceneObjects（BoxGeometry etc.）との当たり判定を行う
+    const shootIntersects = shootRaycaster.intersectObjects(sceneObjects);
+    if (shootIntersects.length > 0) {
+      // 一番近いヒット情報
+      const hitInfo = shootIntersects[0];
+      const hitPoint = hitInfo.point;
+      const hitNormal = hitInfo.face.normal;
+
+      console.log('Shoot hit at', hitPoint, 'on object', hitInfo.object);
+
+      // ③ 既存のヒットマーカーを削除
+      if (tempHitMarker) {
+        scene.remove(tempHitMarker);
+        tempHitMarker.geometry.dispose();
+        tempHitMarker.material.dispose();
+        tempHitMarker = null;
+      }
+
+      // ④ 新たにヒットマーカーを配置
+      tempHitMarker = new THREE.Mesh(hitMarkerGeometry, hitMarkerMaterial);
+      // ヒットポイントに少しオフセットを加えて表示（法線方向に沿って0.1だけ浮かせる）
+      const offsetPos = hitPoint.clone().add(hitNormal.clone().multiplyScalar(0.1));
+      tempHitMarker.position.copy(offsetPos);
+      scene.add(tempHitMarker);
+
+      // ⑤（オプション）ヒットしたオブジェクトを少し変色させる例
+      if (hitInfo.object.material) {
+        hitInfo.object.material.color.set(0xffff00); // 黄色に変更
+        // 0.2秒後に元に戻す（setTimeout でデモ的にリセット）
+        setTimeout(() => {
+          hitInfo.object.material.color.set(0x808080); // 元の色（空灰色）に戻す
+        }, 200);
+      }
+    } else {
+      console.log('Shoot missed (no hit)');
+    }
+  }
+});

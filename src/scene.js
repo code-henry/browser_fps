@@ -40,8 +40,12 @@ export function createScene() {
   // 建物配置（白 + エッジ）
   const boxMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff });
 
-  for (let x = -100; x <= 100; x += 20) {
-    for (let z = -100; z <= 100; z += 20) {
+  // 間隔を広げる（もとの20 → 40）
+  const spacing = 40;
+  const extent = 100;
+
+  for (let x = -extent; x <= extent; x += spacing) {
+    for (let z = -extent; z <= extent; z += spacing) {
       const height = 20 + Math.random() * 60;
 
       const geometry = new THREE.BoxGeometry(10, height, 10);

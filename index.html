@@ -39,13 +39,28 @@
       transform: translateX(-50%);
     }
     /* ======================================== */
+
+    /* Simple scope overlay (hidden by default) */
+    #scopeOverlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      pointer-events: none;
+      display: none;
+      /* faint vignette to simulate scope */
+      background: radial-gradient(circle at center, rgba(0,0,0,0) 30%, rgba(0,0,0,0.35) 60%, rgba(0,0,0,0.6) 80%);
+    }
   </style>
 </head>
 <body>
   <!-- クロスヘアを画面中央に表示 -->
   <div class="crosshair"></div>
+  <!-- Right-click scope overlay target -->
+  <div id="scopeOverlay"></div>
 
   <!-- 既存の main.js (モジュール) を読み込む -->
-  <script type="module" src="./main.js"></script>
+  <script type="module" src="./src/main.js"></script>
 </body>
 </html>
