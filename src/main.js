@@ -95,6 +95,31 @@ let slideJumped = false;
 
 const visiblePos = playerPos.clone();
 const hudEl = document.getElementById('hud');
+const gameOverEl = document.getElementById('gameOver');
+const toastEl = document.getElementById('toast');
+const startOverlayEl = document.getElementById('startOverlay');
+let gameStarted = false;
+
+// ──────────────────────────────────────────────────
+// プレイヤー武器（右手の棒）
+// ──────────────────────────────────────────────────
+let stickGroup = null;
+let stickMesh = null;
+let swingTimer = 0;
+const swingDuration = 0.25; // 秒
+initPlayerStick();
+function updateStickPlacement() {
+  if (!stickGroup) return;
+  // カメラの近接平面上の可視幅・高さを計算し、画面比に応じて配置
+  const near = camera.near;
+  const v = 2 * near * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
+  const h = v * camera.aspect;
+  // 画面右下寄り（マイクラ風）: 画面比で位置を決定
+  const fracX = 0.6;  // もう少し右寄りに
+  const fracY = -0.5; // わずかに上へ
+  const zMul = 1.8;    // 少しだけ遠ざけて近接クリップを回避
+  stickGroup.position.set(h * fracX, v * fracY, -near * zMul);
+}
 
 // ワイヤー用表示ジオメトリ
 let leftRope = null;
@@ -121,13 +146,13 @@ scene.traverse((child) => {
 // ──────────────────────────────────────────────────
 // 敵（細身ロボット）
 // ──────────────────────────────────────────────────
-const ENEMY_COUNT = 5;
+const ENEMY_COUNT = 10;
+const ENEMY_TOTAL = ENEMY_COUNT;
 const ENEMY_SPEED = 7.0;
 const ENEMY_TURN = Math.PI * 0.35; // 障害物ヒット時の回頭角
 const ENEMY_RADIUS = 3.5;          // 当たり半径（AABBとの判定用）
 const ENEMY_SIGHT_RANGE = 140.0;   // 視認/攻撃範囲
-const ENEMY_FIRE_INTERVAL = 0.35;  // 連射間隔（秒）
-const ENEMY_BURST_COUNT = 18;      // 1度に撃つ弾数（扇形）
+const ENEMY_FIRE_INTERVAL = 0.25;  // 連射間隔（秒）
 const ENEMY_BULLET_SPEED = 45.0;   // 弾速度
 const ENEMY_BULLET_RADIUS = 0.3;   // 弾の半径（当たり）
 
@@ -440,6 +465,14 @@ window.addEventListener('keyup', (e) => {
   // Shiftは単発動作のため、keyupでは何もしない
 });
 
+// レスポンシブ対応：ウィンドウサイズ変更でレンダラー/カメラ更新
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  updateStickPlacement();
+});
+
 //
 // 8. アニメーションループ（慣性追加版）
 //
@@ -453,6 +486,12 @@ function animate() {
   const time = performance.now();
   const delta = (time - prevTime) / 1000;
   prevTime = time;
+
+  // 開始前は静止画レンダリングのみ
+  if (!gameStarted) {
+    renderer.render(scene, camera);
+    return;
+  }
 
   if (gameOver) {
     renderer.render(scene, camera);
@@ -647,6 +686,11 @@ function animate() {
   // 弾幕更新
   updateBullets(delta);
 
+  // 棒のアニメ更新
+  updatePlayerStick(delta);
+  // 比率に応じた棒の位置更新（FOVやウィンドウサイズ変更にも追従）
+  updateStickPlacement();
+
   // ──────────────────────────────────────────────────
   // (D) 地面スナップ ＆ 着地判定
   // ──────────────────────────────────────────────────
@@ -691,7 +735,7 @@ function animate() {
   if (hudEl) {
     const groundY = PLAYER_HEIGHT;
     const airborne = (playerPos.y > groundY + 0.01) || isGrappleLeft || isGrappleRight;
-    hudEl.textContent = `Dash:${dashAvailable ? 'READY' : '—'}  Air:${airborne ? 'YES' : 'NO'}  L:${isGrappleLeft?'1':'0'} R:${isGrappleRight?'1':'0'}`;
+    hudEl.textContent = `Enemies:${enemies.length}/${ENEMY_TOTAL}  |  Dash:${dashAvailable ? 'READY' : '—'}  Air:${airborne ? 'YES' : 'NO'}  L:${isGrappleLeft?'1':'0'} R:${isGrappleRight?'1':'0'}`;
   }
 
 
@@ -732,9 +776,8 @@ const scopeOverlay = document.getElementById('scopeOverlay');
 // マウス右クリックでスコープON → コンテキストメニューを無効化
 window.addEventListener('contextmenu', (e) => {
   e.preventDefault();  // 右クリックメニューを抑止
-  // まず至近距離キル判定
-  if (tryCloseKill()) return;
-  // 近接キルでなければスコープON
+  if (!gameStarted) return; // 開始前は無効
+  // スコープON（近接キルは左クリックに移行）
   if (!isScoped) {
     isScoped = true;
     camera.fov = zoomedFov;
@@ -744,6 +787,7 @@ window.addEventListener('contextmenu', (e) => {
 });
 
 window.addEventListener('mouseup', (e) => {
+  if (!gameStarted) return;
   if (e.button === 2 && isScoped) {
     isScoped = false;
     camera.fov = normalFov;
@@ -762,9 +806,16 @@ const hitMarkerMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 });
 let tempHitMarker = null;  // 直前のヒットマーカーを保持する
 
 window.addEventListener('mousedown', (e) => {
-  if (e.button === 0 && SHOOT_ENABLED) {
-    // 左クリックのシュート機能は一時無効（フラグでONにできる）
-    // ...（元の実装は保持）
+  if (!gameStarted) {
+    // クリックで開始（PointerLockは既存のcontrolsが担当）
+    gameStarted = true;
+    if (startOverlayEl) startOverlayEl.style.display = 'none';
+    return;
+  }
+  if (e.button === 0) {
+    // 左クリック：ヘッドショット（近距離シューター）→ 棒を振る
+    tryHeadshot();
+    swingTimer = swingDuration;
   }
 });
 
@@ -793,39 +844,39 @@ function resolveCollisions2D(pos, radius, aabbs) {
 }
 
 // 近接ヘッドショット（右クリック）で敵を撃破
-function tryCloseKill() {
+const SHOOT_RANGE = 25.0; // 一定範囲内のみ射撃（ヘッドショット）
+function tryHeadshot() {
+  if (gameOver) return false;
   const ray = new THREE.Raycaster();
   const origin = camera.getWorldPosition(new THREE.Vector3());
   const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion).normalize();
   ray.set(origin, dir);
   const hits = ray.intersectObjects(sceneObjects);
-  if (hits.length === 0) return false;
+  if (!hits || hits.length === 0) return false;
 
-  const hit = hits[0];
-  const obj = hit.object;
-  const dist = origin.distanceTo(hit.point);
-  const CLOSE = 3.0;
-  if (!gameOver && obj.userData && obj.userData.enemy && obj.userData.part === 'head' && dist <= CLOSE) {
-    // enemies 配列から該当グループを探して破棄
-    const grp = obj.parent; // headはグループ直下
-    // sceneObjects からも除外
-    const removed = [];
-    grp.traverse((n) => {
-      if (n.isMesh) removed.push(n);
-    });
-    for (const m of removed) {
-      const idx = sceneObjects.indexOf(m);
-      if (idx >= 0) sceneObjects.splice(idx, 1);
-    }
-    // enemies から消す
-    for (let i = enemies.length - 1; i >= 0; i--) {
-      if (enemies[i].group === grp) enemies.splice(i, 1);
-    }
-    scene.remove(grp);
-    console.log('Enemy down');
-    return true;
+  // 最初にヒットしたheadを拾う（距離制限あり、木遮蔽あり）
+  const headHit = hits.find(h => h.object && h.object.userData && h.object.userData.enemy && h.object.userData.part === 'head');
+  if (!headHit) return false;
+
+  const dist = origin.distanceTo(headHit.point);
+  if (dist > SHOOT_RANGE) return false;
+  // 木で遮られていたらNG
+  if (!lineOfSight(origin, headHit.point, colliders)) return false;
+
+  const grp = headHit.object.parent;
+  const removed = [];
+  grp.traverse((n) => { if (n.isMesh) removed.push(n); });
+  for (const m of removed) {
+    const idx = sceneObjects.indexOf(m);
+    if (idx >= 0) sceneObjects.splice(idx, 1);
   }
-  return false;
+  for (let i = enemies.length - 1; i >= 0; i--) {
+    if (enemies[i].group === grp) enemies.splice(i, 1);
+  }
+  scene.remove(grp);
+  console.log('Enemy down (headshot)');
+  showToast('ENEMY DOWN');
+  return true;
 }
 
 function triggerGameOver() {
@@ -834,8 +885,176 @@ function triggerGameOver() {
   // 止める
   playerVelocity.set(0, 0, 0);
   // HUD/Overlay
-  const el = document.getElementById('gameOver');
-  if (el) el.style.display = 'flex';
+  if (gameOverEl) {
+    gameOverEl.innerHTML = 'GAME OVER<br>Rキーでリスタート';
+    gameOverEl.style.display = 'flex';
+  }
+}
+
+// Rキーでリスタート
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'KeyR' && gameOver) {
+    resetGame();
+  }
+});
+
+function resetGame() {
+  // オーバーレイ非表示
+  if (gameOverEl) gameOverEl.style.display = 'none';
+  gameOver = false;
+
+  // スコープ解除
+  if (isScoped) {
+    isScoped = false;
+    camera.fov = normalFov;
+    camera.updateProjectionMatrix();
+    scopeOverlay.style.display = 'none';
+  }
+
+  // 弾を全消去
+  if (typeof bullets !== 'undefined') {
+    for (let i = bullets.length - 1; i >= 0; i--) {
+      removeBulletAt(i);
+    }
+  }
+
+  // 敵を全消去
+  if (typeof enemies !== 'undefined') {
+    for (let i = enemies.length - 1; i >= 0; i--) {
+      const grp = enemies[i].group;
+      scene.remove(grp);
+    }
+    enemies.length = 0;
+  }
+  // sceneObjects から敵メッシュを除外
+  for (let i = sceneObjects.length - 1; i >= 0; i--) {
+    const o = sceneObjects[i];
+    if (o.userData && o.userData.enemy) sceneObjects.splice(i, 1);
+  }
+  // 敵を再スポーン
+  const newEnemies = spawnEnemies(ENEMY_COUNT);
+  // 参照を更新
+  enemies.push(...newEnemies);
+
+  // ワイヤー解除
+  isGrappleLeft = false; isGrappleRight = false;
+  leftAnchorTarget = null; leftAnchorLocal = null;
+  rightAnchorTarget = null; rightAnchorLocal = null;
+  if (leftRope) { scene.remove(leftRope); leftRope.geometry.dispose(); leftRope.material.dispose(); leftRope = null; }
+  if (rightRope) { scene.remove(rightRope); rightRope.geometry.dispose(); rightRope.material.dispose(); rightRope = null; }
+
+  // プレイヤーを初期化
+  playerPos.set(0, PLAYER_HEIGHT, 0);
+  playerVelocity.set(0, 0, 0);
+  isInertiaMode = false; isSliding = false; slideJumped = false;
+  controls.getObject().position.copy(playerPos);
+  camera.position.copy(playerPos);
+  visiblePos.copy(playerPos);
+
+  // ダッシュ・HUD等
+  dashAvailable = false; dashGraceTimer = 0;
+  swingTimer = 0; if (stickMesh) { stickMesh.rotation.set(0, 0, 0); }
+  updateStickPlacement();
+
+  // ループ再開
+  animate();
+}
+
+function initPlayerStick() {
+  // カメラに追随させる
+  stickGroup = new THREE.Group();
+  // もっと縦に、かつ自分側（手前）に寄せて持ち手を見せる
+  stickGroup.position.set(0.44, -0.10, -0.28);
+  stickGroup.rotation.set(-0.15, 0.06, 0);
+  camera.add(stickGroup);
+  // 新モデルで再構築して旧処理はスキップ
+  buildStickModel();
+  stickGroup.rotation.set(-0.35, 0.12, 0.04);
+  updateStickPlacement();
+  return;
+
+  // 縦棒: 上半分（色強め）、下半分（黒）
+  const halfLen = 0.50;            // さらに短く
+  const width = 0.02, depth = 0.02; // さらに細く
+  const geomUpper = new THREE.BoxGeometry(width, halfLen, depth);
+  const geomLower = new THREE.BoxGeometry(width, halfLen, depth);
+  const matUpper = new THREE.MeshBasicMaterial({ color: 0xffcc33 }); // 視認性の高い黄
+  const matLower = new THREE.MeshBasicMaterial({ color: 0x111111 }); // 黒
+
+  const upper = new THREE.Mesh(geomUpper, matUpper);
+  const lower = new THREE.Mesh(geomLower, matLower);
+
+  for (const m of [upper, lower]) {
+    m.renderOrder = 999; m.material.depthTest = false; m.castShadow = false; m.receiveShadow = false;
+  }
+
+  // カメラ座標系でYが上。上半分を上へ、下半分を下へ配置して1本の棒に見せる。
+  upper.position.set(0, halfLen * 0.5, 0);
+  lower.position.set(0, -halfLen * 0.5, 0);
+
+  const stick = new THREE.Group();
+  stick.add(upper);
+  stick.add(lower);
+  // 手元の握り位置を少し下げて右に寄せる
+  // グリップ位置をわずかに手前・内側に（配置は updateStickPlacement が管理）
+  stick.position.set(0.02, -0.08, 0.0);
+  stickGroup.add(stick);
+  stickMesh = stick; // 参照保持
+  // 全体スケールを控えめに（全体的に小さく表示）
+  stickGroup.scale.setScalar(0.85);
+}
+
+function updatePlayerStick(delta) {
+  if (!stickGroup) return;
+  if (swingTimer > 0) {
+    swingTimer = Math.max(0, swingTimer - delta);
+    const t = 1 - (swingTimer / swingDuration); // 0→1
+    // マイクラ風: 上から下へ強く振り下ろす（グループごと回す）
+    const ease = t < 0.6 ? (t / 0.6) : 1 - (t - 0.6) / 0.4 * 0.2;
+    const angleDown = -0.15 - ease * 2.55; // -0.15 → およそ -2.7rad まで下げる
+    stickGroup.rotation.x = angleDown;
+    stickGroup.rotation.y = 0.1; // わずかに外へ
+  } else {
+    // 待機姿勢に戻す（少し傾けた縦構え）
+    stickGroup.rotation.x = THREE.MathUtils.lerp(stickGroup.rotation.x, -0.35, 0.25);
+    stickGroup.rotation.y = THREE.MathUtils.lerp(stickGroup.rotation.y, 0.12, 0.25);
+  }
+}
+
+// 新しい棒モデル（短い黒い取っ手＋短い木のシャフト＋明色の先端）
+function buildStickModel() {
+  if (!stickGroup) return;
+  // 既存の子を除去
+  while (stickGroup.children.length) {
+    const c = stickGroup.children.pop();
+    c.traverse && c.traverse(n => {
+      if (n.isMesh) { n.geometry && n.geometry.dispose && n.geometry.dispose(); }
+    });
+  }
+  const width = 0.012, depth = 0.012;
+  const gripLen = 0.05, shaftLen = 0.16;
+  const matGrip = new THREE.MeshBasicMaterial({ color: 0x111111 });
+  const matShaft = new THREE.MeshBasicMaterial({ color: 0xffcc33 });
+  // 先端パーツは不要
+  const meshGrip = new THREE.Mesh(new THREE.BoxGeometry(width, gripLen, depth), matGrip);
+  const meshShaft = new THREE.Mesh(new THREE.BoxGeometry(width, shaftLen, depth), matShaft);
+  for (const m of [meshGrip, meshShaft]) { m.renderOrder = 999; m.material.depthTest = false; }
+  // 縦方向に配置（Y上）
+  meshGrip.position.set(0, -(gripLen * 0.5), 0);
+  // 取っ手の上端とシャフトの下端がピッタリ合うように
+  meshShaft.position.set(0, (shaftLen * 0.5), 0);
+  const stick = new THREE.Group();
+  stick.add(meshGrip); stick.add(meshShaft);
+  stick.position.set(0.01, -0.02, 0.0);
+  stickGroup.add(stick);
+  stickMesh = stick; // 参照保持（未使用）
+}
+
+function showToast(msg) {
+  if (!toastEl) return;
+  toastEl.textContent = msg;
+  toastEl.style.opacity = '1';
+  setTimeout(() => { toastEl.style.opacity = '0'; }, 900);
 }
 
 function refreshAnchors() {
@@ -978,33 +1197,19 @@ function spawnBullet(pos, vel) {
 }
 
 function fireVolley(e) {
+  // 直進単発弾のみ。LOS（木に遮られていない）と距離条件を満たす肩から撃つ。
   const originL = e.shoulderL.localToWorld(new THREE.Vector3(0, 0, 0));
   const originR = e.shoulderR.localToWorld(new THREE.Vector3(0, 0, 0));
-  const aimL = new THREE.Vector3().subVectors(playerPos, originL).normalize();
-  const aimR = new THREE.Vector3().subVectors(playerPos, originR).normalize();
-
-  // 扇状にばら撒く
-  const spread = Math.PI / 3; // 60度
-  for (let i = 0; i < ENEMY_BURST_COUNT; i++) {
-    const t = (i / (ENEMY_BURST_COUNT - 1)) - 0.5; // -0.5..0.5
-    const angle = t * spread;
-    // Lから
-    const dirL = aimL.clone();
-    yawPitch(dirL, angle * 0.7, angle * 0.2);
-    dirL.normalize().multiplyScalar(ENEMY_BULLET_SPEED);
-    spawnBullet(originL, dirL);
-    // Rから
-    const dirR = aimR.clone();
-    yawPitch(dirR, angle * 0.7, -angle * 0.2);
-    dirR.normalize().multiplyScalar(ENEMY_BULLET_SPEED);
-    spawnBullet(originR, dirR);
+  const distL = originL.distanceTo(playerPos);
+  const distR = originR.distanceTo(playerPos);
+  if (distL < ENEMY_SIGHT_RANGE && lineOfSight(originL, playerPos, colliders)) {
+    const dir = new THREE.Vector3().subVectors(playerPos, originL).normalize().multiplyScalar(ENEMY_BULLET_SPEED);
+    spawnBullet(originL, dir);
   }
-}
-
-function yawPitch(vec, yaw, pitch) {
-  // vec を基準にヨー/ピッチずらす（近似）。
-  const m = new THREE.Euler(pitch, yaw, 0, 'YXZ');
-  vec.applyEuler(m);
+  if (distR < ENEMY_SIGHT_RANGE && lineOfSight(originR, playerPos, colliders)) {
+    const dir = new THREE.Vector3().subVectors(playerPos, originR).normalize().multiplyScalar(ENEMY_BULLET_SPEED);
+    spawnBullet(originR, dir);
+  }
 }
 
 function updateBullets(delta) {
@@ -1036,6 +1241,28 @@ function updateBullets(delta) {
     if (!alive) { removeBulletAt(i); continue; }
     b.mesh.position.copy(pos);
   }
+}
+
+// origin→target の直線が木AABBに遮られているかをチェック
+function lineOfSight(origin, target, aabbs) {
+  const dir = new THREE.Vector3().subVectors(target, origin);
+  const dist = dir.length();
+  if (dist === 0) return true;
+  dir.multiplyScalar(1 / dist);
+  const step = 1.0; // 1m刻みでサンプル
+  const steps = Math.max(1, Math.ceil(dist / step));
+  for (let i = 1; i <= steps; i++) { // origin直近は除外
+    const p = origin.clone().addScaledVector(dir, i * (dist / steps));
+    for (const c of aabbs) {
+      // 高さ条件：弾の高さがAABB上面より上なら遮らない
+      if (p.y > c.maxY + ENEMY_BULLET_RADIUS) continue;
+      if (p.x >= c.minX - ENEMY_BULLET_RADIUS && p.x <= c.maxX + ENEMY_BULLET_RADIUS &&
+          p.z >= c.minZ - ENEMY_BULLET_RADIUS && p.z <= c.maxZ + ENEMY_BULLET_RADIUS) {
+        return false; // 遮られた
+      }
+    }
+  }
+  return true;
 }
 
 function bulletHitColliders(p, r, aabbs) {

@@ -17,6 +17,8 @@ export function createScene() {
 
   const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
   camera.position.set(0, PLAYER_HEIGHT, 0);
+  // カメラをシーングラフに追加（カメラ子オブジェクトを描画するため）
+  scene.add(camera);
 
   const renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setSize(window.innerWidth, window.innerHeight);
@@ -93,6 +95,7 @@ export function createScene() {
 
       const geometry = new THREE.BoxGeometry(thicknessX, height, thicknessZ);
       const building = new THREE.Mesh(geometry, boxMaterial);
+      building.userData.tree = true; // LOSや当たり判定で識別できるように
       building.position.set(px, height / 2, pz);
       building.castShadow = true;
       building.receiveShadow = true;
