@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Wire Hook Test</title>
+  <title>簡単版</title>
   <style>
     body { margin: 0; overflow: hidden; }
     /* ========= クロスヘア用スタイル ========= */
@@ -52,6 +52,73 @@
       /* faint vignette to simulate scope */
       background: radial-gradient(circle at center, rgba(0,0,0,0) 30%, rgba(0,0,0,0.35) 60%, rgba(0,0,0,0.6) 80%);
     }
+    /* HUD */
+    #hud {
+      position: fixed;
+      top: 8px;
+      left: 8px;
+      color: #111;
+      background: rgba(255,255,255,0.7);
+      padding: 6px 8px;
+      font: 12px/1.4 monospace;
+      border-radius: 4px;
+      user-select: none;
+    }
+    #gameOver {
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0,0,0,0.6);
+      color: #fff;
+      font: 32px/1.2 sans-serif;
+      user-select: none;
+      z-index: 10;
+    }
+
+    #toast {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      padding: 10px 18px;
+      background: rgba(0,0,0,0.8);
+      color: #fff;
+      font: 22px/1.2 sans-serif;
+      border-radius: 8px;
+      opacity: 0;
+      transition: opacity .45s ease;
+      pointer-events: none;
+      z-index: 11;
+    }
+
+    #startOverlay {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0,0,0,0.8);
+      color: #fff;
+      z-index: 20;
+      font: 16px/1.6 sans-serif;
+      text-align: left;
+      padding: 24px;
+    }
+    #startOverlay .panel {
+      max-width: 680px;
+      width: 90vw;
+      background: rgba(20,20,20,0.9);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 10px;
+      padding: 20px 24px;
+      box-shadow: 0 8px 30px rgba(0,0,0,0.5);
+    }
+    #startOverlay h1 { margin: 0 0 8px; font-size: 24px; }
+    #startOverlay ul { margin: 8px 0 0 20px; padding: 0; }
+    #startOverlay li { margin: 4px 0; }
+    #startOverlay .hint { margin-top: 12px; opacity: 0.9; }
   </style>
 </head>
 <body>
@@ -59,6 +126,22 @@
   <div class="crosshair"></div>
   <!-- Right-click scope overlay target -->
   <div id="scopeOverlay"></div>
+  <div id="hud"></div>
+  <div id="gameOver">GAME OVER</div>
+  <div id="toast"></div>
+  <div id="startOverlay">
+    <div class="panel">
+      <h1>遊び方（mode: EASY）</h1>
+      <p>進撃〇巨人の巨大樹の森をモチーフにしたFPSです。敵は10体いて、頭を狙って攻撃すれば倒せます。すべて倒せれば勝利です。</p>
+      <ul>
+        <li>W/A/S/D/Space: 移動、マウス: 視点</li>
+        <li>E: ワイヤー射出（敵にもフック可）</li>
+        <li>Shift: 向いてる方向にガス噴射ダッシュ</li>
+        <li>左クリック: 攻撃</li>
+      </ul>
+      <div class="hint">画面をクリックすると開始します。リスキルにご注意ください。</div>
+    </div>
+  </div>
 
   <!-- 既存の main.js (モジュール) を読み込む -->
   <script type="module" src="./src/main.js"></script>

@@ -1,5 +1,6 @@
 import * as THREE from './three.module.js';
 import { PointerLockControls } from './PointerLockControls.js';
+import { PLAYER_HEIGHT } from './config.js';
 
 let move = { forward: false, backward: false, left: false, right: false };
 let velocity = new THREE.Vector3();  // 速度ベクトル
@@ -50,9 +51,9 @@ export function handleMovement(controls) {
   object.position.y += velocity.y;
 
   // 地面で止まる処理
-  if (object.position.y < 5) {
+  if (object.position.y < PLAYER_HEIGHT) {
     velocity.y = 0;
-    object.position.y = 5;
+    object.position.y = PLAYER_HEIGHT;
     canJump = true;
   }
 }
@@ -84,6 +85,5 @@ export function handleMovementHorizontalOnly(controls) {
   //   canJump = true;
   // }
 }
-
 
 
